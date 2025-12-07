@@ -1,0 +1,10 @@
+pandas
+numpy
+requests
+yfinance
+transformers
+torch
+scikit-learn
+xgboost
+imblearn
+joblib
