@@ -3,6 +3,9 @@
 import os
 import sys
 
+# -------------------------------------------------------
+# Utility to run steps safely
+# -------------------------------------------------------
 def run_step(name, func):
     print(f"\n🔹 Starting: {name} ...")
     try:
@@ -13,15 +16,17 @@ def run_step(name, func):
         sys.exit(1)
 
 # -------------------------------------------------------
-# IMPORT FUNCTIONS
+# Make sure src/ is in Python path (IMPORTANT)
 # -------------------------------------------------------
-from src.fetch_news import fetch_news
-from src.fetch_stocks import fetch_stocks
-from src.merge_data import merge_news_and_stock   
-from src.clean_sentiment import add_sentiment
-from src.feature_engineering import feature_engineering as generate_features
-from src.pca_reduce import apply_pca
-from src.train_models_optimized import train_models, tune_mlp, tune_xgb
+sys.path.append(os.path.abspath("src"))
+
+# -------------------------------------------------------
+# IMPORT FUNCTIONS (STOCK-ONLY TRAINING PIPELINE)
+# -------------------------------------------------------
+from fetch_stocks import fetch_stocks
+from fetch_news import fetch_news          # used later in Streamlit (not training)
+from stock_feature_engineering import stock_feature_engineering
+from train_stock_models import train_stock_models
 
 # -------------------------------------------------------
 # CHECK REQUIRED FOLDERS
@@ -41,33 +46,16 @@ if __name__ == "__main__":
     print("\n🚀 Running Stock–News Prediction Pipeline")
     print("----------------------------------------")
 
-    # 1️⃣ Fetch News
-    run_step("News Fetching", fetch_news)
+    # 1️⃣ Fetch historical stock prices (training data)
+    run_step("Fetch Stock Prices", fetch_stocks)
 
-    # 2️⃣ Fetch Stock Prices
-    run_step("Stock Price Fetching", fetch_stocks)
+    # 2️⃣ Fetch news (used only for Streamlit sentiment overlay)
+    run_step("Fetch News", fetch_news)
 
-    # 3️⃣ Merge News + Stock
-    if not os.path.exists("data/finnhub_general_news.csv"):
-        print("❌ No news file found. Stopping pipeline.")
-        sys.exit(1)
+    # 3️⃣ Stock-only feature engineering + labels
+    run_step("Stock Feature Engineering", stock_feature_engineering)
 
-    run_step("Merge News + Stock Data", merge_news_and_stock)
+    # 4️⃣ Train models (MLP + XGBoost)
+    run_step("Train Stock Models", train_stock_models)
 
-    # 4️⃣ Sentiment Cleaning
-    if not os.path.exists("data/news_with_stock.csv"):
-        print("❌ Merged file not found. Cannot continue.")
-        sys.exit(1)
-
-    run_step("Sentiment Cleaning", add_sentiment)
-
-    # 5️⃣ Feature Engineering
-    run_step("Feature Engineering", generate_features)
-
-    # 6️⃣ PCA
-    run_step("PCA Dimensionality Reduction", apply_pca)
-
-    # Skip separate tuning calls in main.py
-    print("\n🔹 Training models with hyperparameter tuning inside train_models()...")
-    run_step("Model Training", lambda: train_models(feature_path="data/feature_engineered_dataset.csv", use_smote=True, n_trials=30))
     print("\n🎉 Pipeline completed successfully!")

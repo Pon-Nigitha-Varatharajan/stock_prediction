@@ -1,108 +1,81 @@
-# src/merge_data.py
+import os
 import pandas as pd
 import numpy as np
 
-def merge_news_and_stock(stock_csv="data/all_stock_data.csv", news_csv="data/finnhub_general_news.csv", output_csv="data/news_with_stock.csv"):
-    """
-    Merge news data with stock data, compute next_close and movement labels,
-    and save the final dataset.
-    """
-    print("Starting: Merge News + Stock Data ...")
 
-    # -------------------------------
-    # 1️⃣ Load stock data and news
-    # -------------------------------
-    combined_stocks = pd.read_csv(stock_csv)
+def merge_news_and_stock(
+    news_csv="data/finnhub_general_news.csv",
+    stock_csv="data/all_stock_data.csv",
+    output_csv="data/news_with_stock.csv",
+    return_threshold=0.0,  
+):
+    print("🔧 Loading news and stock data...")
+
+    if not os.path.exists(news_csv) or not os.path.exists(stock_csv):
+        raise FileNotFoundError("News or stock CSV missing.")
+
     df_news = pd.read_csv(news_csv)
+    df_stock = pd.read_csv(stock_csv)
 
-    # -------------------------------
-    # 2️⃣ Ensure date columns exist
-    # -------------------------------
-    # Stocks
-    if 'Date' not in combined_stocks.columns:
-        possible_date_cols = [c for c in combined_stocks.columns if 'date' in c.lower()]
-        if possible_date_cols:
-            combined_stocks.rename(columns={possible_date_cols[0]: 'Date'}, inplace=True)
-        else:
-            raise KeyError("No date column found in stock data!")
+    # ----------------------------
+    # News preprocessing
+    # ----------------------------
+    if "datetime" not in df_news.columns:
+        raise KeyError("'datetime' not found in news CSV")
+    if "symbol" not in df_news.columns:
+        raise KeyError("'symbol' missing in news CSV")
 
-    combined_stocks['Date'] = pd.to_datetime(combined_stocks['Date'])
-    combined_stocks['date'] = combined_stocks['Date'].dt.date
+    df_news["datetime"] = pd.to_datetime(df_news["datetime"], errors="coerce")
+    df_news = df_news.dropna(subset=["datetime"])
+    df_news["date"] = df_news["datetime"].dt.date
 
-    # News
-    if 'datetime' not in df_news.columns:
-        possible_dt_cols = [c for c in df_news.columns if 'date' in c.lower()]
-        if possible_dt_cols:
-            df_news.rename(columns={possible_dt_cols[0]: 'datetime'}, inplace=True)
-        else:
-            raise KeyError("No datetime column found in news data!")
+    # ----------------------------
+    # Stock preprocessing
+    # ----------------------------
+    if "date" not in df_stock.columns or "symbol" not in df_stock.columns:
+        raise KeyError("'symbol' or 'date' missing in stock CSV")
 
-    df_news['datetime'] = pd.to_datetime(df_news['datetime'])
-    df_news['date'] = df_news['datetime'].dt.date
+    df_stock["date"] = pd.to_datetime(df_stock["date"], errors="coerce").dt.date
+    df_stock = df_stock.dropna(subset=["date"])
 
-    # -------------------------------
-    # 3️⃣ Ensure symbol columns exist
-    # -------------------------------
-    if 'symbol' not in combined_stocks.columns:
-        possible_symbol_cols = [c for c in combined_stocks.columns if 'symbol' in c.lower()]
-        if possible_symbol_cols:
-            combined_stocks.rename(columns={possible_symbol_cols[0]: 'symbol'}, inplace=True)
-        else:
-            raise KeyError("No symbol column found in stock data!")
+    # ✅ Force numeric (fixes your error)
+    for col in ["open", "high", "low", "close", "volume"]:
+        if col in df_stock.columns:
+            # handle possible commas like "1,234.56"
+            df_stock[col] = (
+                df_stock[col]
+                .astype(str)
+                .str.replace(",", "", regex=False)
+            )
+            df_stock[col] = pd.to_numeric(df_stock[col], errors="coerce")
 
-    # -------------------------------
-    # 4️⃣ Merge news with stock data
-    # -------------------------------
-    merged = pd.merge(
-        df_news,
-        combined_stocks,
-        left_on=['symbol','date'],
-        right_on=['symbol','date'],
-        how='inner'
-    )
+    df_stock = df_stock.dropna(subset=["close"]).reset_index(drop=True)
+    df_stock = df_stock.sort_values(["symbol", "date"]).reset_index(drop=True)
 
-    print(f"✅ Merged shape: {merged.shape}")
+    # ----------------------------
+    # Compute next-day movement on stock table
+    # ----------------------------
+    df_stock["next_close"] = df_stock.groupby("symbol")["close"].shift(-1)
+    df_stock["next_return"] = (df_stock["next_close"] - df_stock["close"]) / df_stock["close"]
+    df_stock["movement"] = (df_stock["next_return"] > return_threshold).astype(int)
 
-    # -------------------------------
-    # 5️⃣ Compute next_close per symbol
-    # -------------------------------
-    symbols = merged['symbol'].unique()
-    for sym in symbols:
-        close_col = f"Close_{sym}"
-        next_col = f"{close_col}_next"
-        if close_col in merged.columns:
-            merged[next_col] = merged.groupby("symbol")[close_col].shift(-1)
-        else:
-            print(f"⚠ Warning: {close_col} not found in merged data.")
+    df_stock = df_stock.dropna(subset=["next_close"]).reset_index(drop=True)
 
-    # -------------------------------
-    # 6️⃣ Compute movement per row
-    # -------------------------------
-    def compute_movement(row):
-        sym = row['symbol']
-        close_col = f"Close_{sym}"
-        next_col = f"{close_col}_next"
+    print("📊 Stock movement distribution:")
+    print(df_stock["movement"].value_counts(dropna=False))
 
-        close = row.get(close_col)
-        next_close = row.get(next_col)
+    # ----------------------------
+    # Merge
+    # ----------------------------
+    merged = pd.merge(df_news, df_stock, on=["symbol", "date"], how="inner")
+    print("✅ Final merged shape:", merged.shape)
 
-        if pd.isna(close) or pd.isna(next_close):
-            return np.nan
-        return int(next_close > close)
-
-    merged['movement'] = merged.apply(compute_movement, axis=1)
-    merged.dropna(subset=['movement'], inplace=True)
-
-    # -------------------------------
-    # 7️⃣ Check label distribution
-    # -------------------------------
-    print("\n🎯 Movement Label Distribution:")
-    print(merged['movement'].value_counts())
-
-    # -------------------------------
-    # 8️⃣ Save merged dataset
-    # -------------------------------
+    os.makedirs(os.path.dirname(output_csv) or ".", exist_ok=True)
     merged.to_csv(output_csv, index=False)
-    print(f"✅ Merged news + stock data saved to {output_csv}")
+    print("✅ Merged news+stock saved:", output_csv)
 
     return merged
+
+
+if __name__ == "__main__":
+    merge_news_and_stock()
